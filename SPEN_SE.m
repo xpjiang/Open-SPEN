@@ -1,105 +1,146 @@
-%% Open SPEN in Pulseq - Chirp RF pulse function 
+%% Open SPEN in Pulseq - SPEN-SE
 % Andreas Holl
 % Division of Medical Physics, Department of Diagnostic and Interventional Radiology,
 % University Medical Center Freiburg, Faculty of Medicine, University of Freiburg, Freiburg, Germany
 % Email: andreas.holl@uniklinik-freiburg.de
 % March. 23, 2024
 
-% A part of the following code was taken from 
-%https://github.com/mikgroup/sigpy/tree/main/sigpy/mri.
+clear all
+close all
+clc
+%addpath(genpath([fileparts(fileparts((pwd))) '\']))
 
-function [rf, pm, gz, gzr, delay] = makeChirpedRfPulse(varargin)
+% Define FOV and resolution
+fov = 300e-3;%256e-3
+Nx = 100;
+Ny = 100;
+deltak = 1/fov; % Pulseq toolbox defaults to k-space units of m^-1
+kWidth = Nx*deltak;
 
-validPulseUses = mr.getSupportedRfUse();
-persistent parser
-if isempty(parser)
-    parser = inputParser;
-    parser.FunctionName = 'makeChirpedRfPulse';
-   
-    % RF params
-    % addRequired(parser, 'type', @(x) any(validatestring(x,validPulseTypes)));
-    addOptional(parser, 'system', mr.opts(), @isstruct);
-    addParamValue(parser, 'duration', 0, @isnumeric);
-    addParamValue(parser, 'ang', 0, @isnumeric);
-    addParamValue(parser, 'freqOffset', 0, @isnumeric);
-    addParamValue(parser, 'phaseOffset', 0, @isnumeric);
-    addParamValue(parser, 'beta', 800, @isnumeric);
-    addParamValue(parser, 'mu', 4.9, @isnumeric);
-    addParamValue(parser, 'n_fac', 40, @isnumeric);
-    addParamValue(parser, 'bandwidth', 0, @isnumeric);
-    addParamValue(parser, 'adiabaticity', 0.4, @isnumeric);
-    % Slice params
-    addParamValue(parser, 'maxGrad', 0, @isnumeric);
-    addParamValue(parser, 'maxSlew', 0, @isnumeric);
-    addParamValue(parser, 'sliceThickness', 0, @isnumeric);
-    addParamValue(parser, 'delay', 0, @isnumeric);
-    addParamValue(parser, 'dwell', 0, @isnumeric); % dummy default value
-    % whether it is a refocusing pulse (for k-space calculation)
-    addOptional(parser, 'use', '', @(x) any(validatestring(x,validPulseUses)));
+% Define sequence parameters
+TE = 27e-3;
+TR=600e-3;
+
+% set system limits
+sys = mr.opts('MaxGrad',40,'GradUnit','mT/m',...
+    'MaxSlew',200,'SlewUnit','T/m/s',...
+    'rfRingdownTime', 20e-6, 'rfDeadtime', 100e-6,'B0',3);
+
+% Create a new sequence object
+seq = mr.Sequence(sys);
+
+% Calculate SPEN-conditions: 
+% sweepBw*rf_dur = gexc.amplitude*rf_dur*fov = gacq.amplitude*Ny*mr.calcDuration(gacq)*fov
+
+rf_dur = 4e-3; % Texc=Tacq
+sweepBw=25000;
+
+gexc = mr.makeTrapezoid('x',sys,'Amplitude',sweepBw/fov,'FlatTime',rf_dur,'Delay',sys.rfDeadTime);
+
+% Create chirped RF and excitation gradient
+rf = makeChirpedRfPulse('duration',rf_dur,'delay',sys.rfDeadTime+gexc.riseTime,'bandwidth',sweepBw, ...
+    'ang',90,'n_fac',40,'system',sys); %+gexc.riseTime nachträglich geändert. Messungen waren ohne-> leichte Verzerrungen
+[bw,f0,M_xy_sta,F1]=mr.calcRfBandwidth(rf);
+% gexc = mr.makeTrapezoid('x',sys,'Amplitude',bw/fov,'FlatTime',rf_dur,'Delay',sys.rfDeadTime);
+
+% Create a slice selective sinc 180° RF refocusing pulse and crusher
+dur_ref = 3e-3;
+sliceThickness = 5e-3;
+[rfref, gz] = mr.makeSincPulse(pi,sys,'Duration',dur_ref,...
+    'SliceThickness',sliceThickness,'apodization',0.2,'timeBwProduct',4,'PhaseOffset',0,'use','refocusing');
+gzCrush = mr.makeTrapezoid('z', 'Amplitude', -gz.amplitude*3, 'Duration', (dur_ref)/2);
+
+% Create other gradients and events
+gRO = mr.makeTrapezoid('x',sys,'Flatarea',Nx*deltak,'FlatTime',rf_dur);
+gxCrush=mr.makeTrapezoid('x',sys,'Area',-gexc.area/2);
+adc = mr.makeAdc(Nx,sys,'Duration',gexc.flatTime,'Delay',gexc.riseTime);
+
+gacqAreas=-Ny/2*deltak:deltak:Ny/2*deltak;
+gre=mr.makeTrapezoid('x',sys,'Area',(gexc.area-gexc.flatArea)/2);
+
+    % - Delay
+delay1 = round((TE/2-mr.calcDuration(gexc)/2-2.8e-4-mr.calcDuration(gz)/2)/seq.gradRasterTime)*seq.gradRasterTime;
+delay2 = round((TE/2-mr.calcDuration(gz)/2-mr.calcDuration(gzCrush)-mr.calcDuration(gRO)/2)/seq.gradRasterTime)*seq.gradRasterTime;
+delayTR = round((TR-(mr.calcDuration(gexc)+2.8e-4+mr.calcDuration(gz)+mr.calcDuration(gzCrush)+mr.calcDuration(gRO)+delay2+delay1+mr.calcDuration(gxCrush)))/seq.gradRasterTime)*seq.gradRasterTime;
+% Create Blocks and loop over acqusition
+
+for i=1:Ny
+    seq.addBlock(rf,gexc)
+    % seq.addBlock(gexcRe)
+    seq.addBlock(mr.makeDelay(delay1))
+    seq.addBlock(gzCrush)
+    seq.addBlock(rfref,gz)
+    phase = mr.makeTrapezoid('y',sys,'Area',gacqAreas(i),'Duration',2.8e-4);
+    seq.addBlock(gzCrush,phase,gre)
+    seq.addBlock(mr.makeDelay(delay2))
+    seq.addBlock(gexc,adc)
+    seq.addBlock(gxCrush)
+    seq.addBlock(mr.makeDelay(delayTR))
 end
-parse(parser, varargin{:});
-opt = parser.Results;
-opt.duration=opt.duration;%-1e-5
-if opt.dwell==0
-    opt.dwell=opt.system.rfRasterTime;
-end
-Nraw = round(opt.duration/opt.dwell+eps);
-N = floor(Nraw/4)*4; % number of points must be divisible by four -- this is a requirement of the underlying library
-t=(0:N-1)*opt.duration/N;
-am=1-abs(cos(pi*t/opt.duration)).^opt.n_fac;
-% am=ones(1,length(am));
-fm=linspace(-opt.bandwidth/2,opt.bandwidth/2,N)*2*pi;
-pm=cumsum(fm)*opt.dwell;
-ifm=length(fm)/2;
-dfm=fm(length(fm)/2);
-%[dfm,ifm]=min(abs(fm)); % find the center of the pulse
-% we will also use the ocasion to find the rate of change of the frequency
-% at the center of the pulse
-if dfm==0
-    pm0=pm(ifm);
-    am0=am(ifm);
-    roc_fm0=abs(fm(ifm+1)-fm(ifm-1))/2/opt.dwell;
-else
-    % we need to bracket the zero-crossing
-    if fm(ifm)*fm(ifm+1) < 0
-        b=1;
-    else
-        b=-1;
-    end
-    pm0=(pm(ifm)*fm(ifm+b)-pm(ifm+b)*fm(ifm))/(fm(ifm+b)-fm(ifm));
-    am0=(am(ifm)*fm(ifm+b)-am(ifm+b)*fm(ifm))/(fm(ifm+b)-fm(ifm));
-    roc_fm0=abs(fm(ifm)-fm(ifm+b))/opt.dwell;
-end
-pm=pm-pm0;
-a=((roc_fm0*opt.adiabaticity)^0.5/2/pi/am0);
-signal = ((a*am.*exp(1i*pm))*1.051/90)*opt.ang;
-if (N~=Nraw)
-    % we need to pad the signal vector
-    Npad=Nraw-N;
-    signal=[zeros(1,Npad-floor(Npad/2)) signal zeros(1,floor(Npad/2))];
-    N=Nraw;
-end
-%BW = opt.timeBwProduct/opt.duration;
-t = ((1:N)-0.5)*opt.dwell;
-%flip = abs(sum(signal))*opt.dwell*2*pi;
-rf.type = 'rf';
-rf.signal = signal;
-rf.t = t;
-rf.shape_dur=N*opt.dwell;
-rf.freqOffset = opt.freqOffset;
-rf.phaseOffset = opt.phaseOffset;
-rf.deadTime = opt.system.rfDeadTime;
-rf.ringdownTime = opt.system.rfRingdownTime;
-rf.delay = opt.delay;
-if ~isempty(opt.use)
-    rf.use=opt.use;
-else
-    rf.use='exitation';
-end
-if rf.deadTime > rf.delay
-    rf.delay = rf.deadTime;
-end
-if rf.ringdownTime > 0 && nargout > 1
-    delay=mr.makeDelay(mr.calcDuration(rf)+rf.ringdownTime);
+% seq.addBlock(mr.makeDelay(1))
+
+name = ['SPEN_SE_' datestr(datetime("today"))];
+rep = check(seq,TE);
+fprintf([rep{:}]);
+% R
+seq.setDefinition('Name', name);
+seq.setDefinition('FOV', fov);
+seq.setDefinition('sweepBw',sweepBw);
+seq.setDefinition('rf_dur',rf_dur);
+seq.setDefinition('Ny',Ny);
+seq.setDefinition('Nx',Nx);
+seq.setDefinition('Gexc',gexc.amplitude);
+seq.setDefinition('TE',TE);
+seq.setDefinition('TR',TR);
+
+seq.write([name '.seq']);
+seq.install('siemens')
+
+R=gexc.flatArea/Nx*fov
+return
+%% Reconstruction for R=1
+clear all
+close all
+clc
+[scan_ID,path] = uigetfile('*.dat','select the rawdata*.dat file','C:\Users\andre\Desktop\Messungen_fuer_MA\SPEN_SE');
+s = convertStringsToChars(strcat(path,scan_ID));
+raw=mapVBVD(s);
+rawdata=permute(raw.image{''},[3 1 2]);
+
+reco(:,:,1:size(rawdata,3))=ifftshift(ifft2(ifftshift(rawdata(:,:,1:end))));
+sos=sqrt((sum(abs(reco(:,:,1:size(reco,3))).^2,3)));
+
+imagesc(sos);axis('tight','equal'); colormap('gray')
+
+%% Fresnel reconstruction for R>1
+clear all
+close all
+clc
+[scan_ID,path] = uigetfile('*.dat','select the rawdata*.dat file','C:\Users\andre\Desktop\Messungen_fuer_MA\SPEN_SE');
+s = convertStringsToChars(strcat(path,scan_ID));
+raw=mapVBVD(s);
+rawdata=permute(raw.image{''},[3 1 2]);
+seq_name=[s(1:end-4) '.seq'];
+sys = mr.opts('MaxGrad',40,'GradUnit','mT/m',...
+    'MaxSlew',200,'SlewUnit','T/m/s',...
+    'rfRingdownTime', 20e-6, 'rfDeadtime', 100e-6,'B0',3);
+seq=mr.Sequence(sys);
+seq.read(seq_name);
+fov = seq.getDefinition('FOV'); % The FOV of phase encoded dimension
+rf_dur = seq.getDefinition('rf_dur'); % The duration of the chirp pulse
+Ny = seq.getDefinition('Ny'); % The number of points in the phase encoded dimension
+gexc = seq.getDefinition('Gexc'); % Excitation gradient amplitude
+R=gexc*rf_dur/Ny*fov; % R-factor
+sweepBw=seq.getDefinition('sweepBw'); % Sweeping bandwidth
+
+% Fresnel convolution reconstruction. Rewriting FFT as a convolution: 
+% Zaitsev, M., Schultz, G., Hennig, J., Gruetter, R. and Gallichan, D. (2015),
+% Parallel imaging with phase scrambling. Magn. Reson. Med., 73: 1407-1419.
+% https://doi.org/10.1002/mrm.25252 
+% Reconstruction algorithm can be requested: maxim.zaitsev@uniklinik-freiburg.de
+for i=1:size(rawdata,3)
+    reco(:,:,i)=(new_fresnel_conv(squeeze(rawdata(:,:,i)),[0,-R],[0,R],[0,0.1]));
 end
 
+image=sqrt((sum(abs(reco(:,:,1:size(reco,3))).^2,3)));
+figure; imagesc(imrotate(image,180)); colormap('gray');axis('equal')
