@@ -1,5 +1,15 @@
-function [rf, gz, gzr, delay] = makeChirpedRfPulse(type,varargin)
-validPulseTypes = {'hypsec','wurst'};
+%% Open SPEN in Pulseq - Chirp RF pulse function 
+% Andreas Holl
+% Division of Medical Physics, Department of Diagnostic and Interventional Radiology,
+% University Medical Center Freiburg, Faculty of Medicine, University of Freiburg, Freiburg, Germany
+% Email: andreas.holl@uniklinik-freiburg.de
+% March. 23, 2024
+
+% A part of the following code was taken from 
+%https://github.com/mikgroup/sigpy/tree/main/sigpy/mri.
+
+function [rf, pm, gz, gzr, delay] = makeChirpedRfPulse(varargin)
+
 validPulseUses = mr.getSupportedRfUse();
 persistent parser
 if isempty(parser)
@@ -7,16 +17,16 @@ if isempty(parser)
     parser.FunctionName = 'makeChirpedRfPulse';
    
     % RF params
-    addRequired(parser, 'type', @(x) any(validatestring(x,validPulseTypes)));
+    % addRequired(parser, 'type', @(x) any(validatestring(x,validPulseTypes)));
     addOptional(parser, 'system', mr.opts(), @isstruct);
-    addParamValue(parser, 'duration', 10e-3, @isnumeric);
+    addParamValue(parser, 'duration', 0, @isnumeric);
     addParamValue(parser, 'ang', 0, @isnumeric);
     addParamValue(parser, 'freqOffset', 0, @isnumeric);
     addParamValue(parser, 'phaseOffset', 0, @isnumeric);
     addParamValue(parser, 'beta', 800, @isnumeric);
     addParamValue(parser, 'mu', 4.9, @isnumeric);
     addParamValue(parser, 'n_fac', 40, @isnumeric);
-    addParamValue(parser, 'bandwidth', 40000, @isnumeric);
+    addParamValue(parser, 'bandwidth', 0, @isnumeric);
     addParamValue(parser, 'adiabaticity', 0.4, @isnumeric);
     % Slice params
     addParamValue(parser, 'maxGrad', 0, @isnumeric);
@@ -27,8 +37,9 @@ if isempty(parser)
     % whether it is a refocusing pulse (for k-space calculation)
     addOptional(parser, 'use', '', @(x) any(validatestring(x,validPulseUses)));
 end
-parse(parser, type, varargin{:});
+parse(parser, varargin{:});
 opt = parser.Results;
+opt.duration=opt.duration;%-1e-5
 if opt.dwell==0
     opt.dwell=opt.system.rfRasterTime;
 end
@@ -36,6 +47,7 @@ Nraw = round(opt.duration/opt.dwell+eps);
 N = floor(Nraw/4)*4; % number of points must be divisible by four -- this is a requirement of the underlying library
 t=(0:N-1)*opt.duration/N;
 am=1-abs(cos(pi*t/opt.duration)).^opt.n_fac;
+% am=ones(1,length(am));
 fm=linspace(-opt.bandwidth/2,opt.bandwidth/2,N)*2*pi;
 pm=cumsum(fm)*opt.dwell;
 ifm=length(fm)/2;
@@ -86,5 +98,8 @@ else
 end
 if rf.deadTime > rf.delay
     rf.delay = rf.deadTime;
+end
+if rf.ringdownTime > 0 && nargout > 1
+    delay=mr.makeDelay(mr.calcDuration(rf)+rf.ringdownTime);
 end
 
