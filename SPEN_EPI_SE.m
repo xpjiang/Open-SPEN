@@ -43,7 +43,7 @@ sweepBw=50000;
 [bw,f0,M_xy_sta,F1]=mr.calcRfBandwidth(rf);
 
 % Create SPEN-gradient
-gexc = mr.makeTrapezoid('y',sys,'Amplitude',sweepBw/fov,'FlatTime',rf_dur,'Delay',sys.rfDeadTime);
+gexc = mr.makeTrapezoid('y',sys,'Amplitude',bw/fov,'FlatTime',rf_dur,'Delay',sys.rfDeadTime);
 
 % Create a slice selective sinc 180° RF pulse and crusher
 dur_ref = 3e-3;
