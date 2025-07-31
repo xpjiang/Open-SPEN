@@ -11,20 +11,27 @@ clc
 %addpath(genpath([fileparts(fileparts((pwd))) '\']))
 
 % Define FOV and resolution
-fov = 300e-3;%256e-3
+fov = 300e-3;%256e-3 % 300mm
 Nx = 100;
 Ny = 100;
 deltak = 1/fov; % Pulseq toolbox defaults to k-space units of m^-1
 kWidth = Nx*deltak;
 
+sliceThickness = 5e-3; % 5mm
+
 % Define sequence parameters
-TE = 27e-3;
-TR=600e-3;
+TE = 12e-3; % 12ms
+TR = 500e-3; % 20ms
+
+rf_dur = 4e-3; % Texc=Tacq 4ms
+sweepBw=25000; % 25KHz
+
+dur_ref = 3e-3; % 3ms
 
 % set system limits
-sys = mr.opts('MaxGrad',40,'GradUnit','mT/m',...
-    'MaxSlew',200,'SlewUnit','T/m/s',...
-    'rfRingdownTime', 20e-6, 'rfDeadtime', 100e-6,'B0',3);
+sys = mr.opts('MaxGrad',20,'GradUnit','mT/m',...
+    'MaxSlew',40,'SlewUnit','T/m/s',...
+    'rfRingdownTime', 20e-6, 'rfDeadtime', 100e-6,'B0',0.3);
 
 % Create a new sequence object
 seq = mr.Sequence(sys);
@@ -32,20 +39,18 @@ seq = mr.Sequence(sys);
 % Calculate SPEN-conditions: 
 % sweepBw*rf_dur = gexc.amplitude*rf_dur*fov = gacq.amplitude*Ny*mr.calcDuration(gacq)*fov
 
-rf_dur = 4e-3; % Texc=Tacq
-sweepBw=25000;
+
 
 gexc = mr.makeTrapezoid('x',sys,'Amplitude',sweepBw/fov,'FlatTime',rf_dur,'Delay',sys.rfDeadTime);
 
 % Create chirped RF and excitation gradient
 rf = makeChirpedRfPulse('duration',rf_dur,'delay',sys.rfDeadTime+gexc.riseTime,'bandwidth',sweepBw, ...
     'ang',90,'n_fac',40,'system',sys); %+gexc.riseTime nachträglich geändert. Messungen waren ohne-> leichte Verzerrungen
-[bw,f0,M_xy_sta,F1]=mr.calcRfBandwidth(rf);
+%[bw,f0,M_xy_sta,F1]=mr.calcRfBandwidth(rf);
 % gexc = mr.makeTrapezoid('x',sys,'Amplitude',bw/fov,'FlatTime',rf_dur,'Delay',sys.rfDeadTime);
 
 % Create a slice selective sinc 180° RF refocusing pulse and crusher
-dur_ref = 3e-3;
-sliceThickness = 5e-3;
+
 [rfref, gz] = mr.makeSincPulse(pi,sys,'Duration',dur_ref,...
     'SliceThickness',sliceThickness,'apodization',0.2,'timeBwProduct',4,'PhaseOffset',0,'use','refocusing');
 gzCrush = mr.makeTrapezoid('z', 'Amplitude', -gz.amplitude*3, 'Duration', (dur_ref)/2);
@@ -56,9 +61,9 @@ gxCrush=mr.makeTrapezoid('x',sys,'Area',-gexc.area/2);
 adc = mr.makeAdc(Nx,sys,'Duration',gexc.flatTime,'Delay',gexc.riseTime);
 
 gacqAreas=-Ny/2*deltak:deltak:Ny/2*deltak;
-gre=mr.makeTrapezoid('x',sys,'Area',(gexc.area-gexc.flatArea)/2);
+grewind=mr.makeTrapezoid('x',sys,'Area',(gexc.amplitude*gexc.fallTime)/2);
 
-    % - Delay
+% - Delay
 delay1 = round((TE/2-mr.calcDuration(gexc)/2-2.8e-4-mr.calcDuration(gz)/2)/seq.gradRasterTime)*seq.gradRasterTime;
 delay2 = round((TE/2-mr.calcDuration(gz)/2-mr.calcDuration(gzCrush)-mr.calcDuration(gRO)/2)/seq.gradRasterTime)*seq.gradRasterTime;
 delayTR = round((TR-(mr.calcDuration(gexc)+2.8e-4+mr.calcDuration(gz)+mr.calcDuration(gzCrush)+mr.calcDuration(gRO)+delay2+delay1+mr.calcDuration(gxCrush)))/seq.gradRasterTime)*seq.gradRasterTime;
@@ -70,8 +75,9 @@ for i=1:Ny
     seq.addBlock(mr.makeDelay(delay1))
     seq.addBlock(gzCrush)
     seq.addBlock(rfref,gz)
-    phase = mr.makeTrapezoid('y',sys,'Area',gacqAreas(i),'Duration',2.8e-4);
-    seq.addBlock(gzCrush,phase,gre)
+    phase = mr.makeTrapezoid('y',sys,'Area',gacqAreas(i),'Duration',1.5e-3);
+    seq.addBlock(grewind,phase,gzCrush)
+    %seq.addBlock(grewind,gzCrush)
     seq.addBlock(mr.makeDelay(delay2))
     seq.addBlock(gexc,adc)
     seq.addBlock(gxCrush)
@@ -84,7 +90,8 @@ rep = check(seq,TE);
 fprintf([rep{:}]);
 % R
 seq.setDefinition('Name', name);
-seq.setDefinition('FOV', fov);
+%seq.setDefinition('FOV', fov);
+seq.setDefinition('FOV', [fov, fov, sliceThickness])
 seq.setDefinition('sweepBw',sweepBw);
 seq.setDefinition('rf_dur',rf_dur);
 seq.setDefinition('Ny',Ny);
@@ -94,7 +101,7 @@ seq.setDefinition('TE',TE);
 seq.setDefinition('TR',TR);
 
 seq.write([name '.seq']);
-seq.install('siemens')
+%seq.install('siemens')
 
 R=gexc.flatArea/Nx*fov
 return

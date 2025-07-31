@@ -36,6 +36,8 @@ if isempty(parser)
     addParamValue(parser, 'dwell', 0, @isnumeric); % dummy default value
     % whether it is a refocusing pulse (for k-space calculation)
     addOptional(parser, 'use', '', @(x) any(validatestring(x,validPulseUses)));
+    % addParamValue(parser, 'freqPPM', 0, @isnumeric);
+    % addParamValue(parser, 'phasePPM', 0, @isnumeric);
 end
 parse(parser, varargin{:});
 opt = parser.Results;
@@ -91,10 +93,18 @@ rf.phaseOffset = opt.phaseOffset;
 rf.deadTime = opt.system.rfDeadTime;
 rf.ringdownTime = opt.system.rfRingdownTime;
 rf.delay = opt.delay;
+
+
+% rf.center = rf.shape_dur / 2;
+% 
+% rf.freqPPM = opt.freqPPM;
+% rf.phasePPM = opt.phasePPM;
+
+
 if ~isempty(opt.use)
     rf.use=opt.use;
 else
-    rf.use='exitation';
+    rf.use='excitation';
 end
 if rf.deadTime > rf.delay
     rf.delay = rf.deadTime;

@@ -14,7 +14,8 @@ try
 seq.plot('timeRange', [0 TR-delayTR]);
 catch
 % exportgraphics((seq.plot('TimeRange', [0 (TR-delayTR)])),'seq.png','Resolution',1000)
-seq.plot()
+% 'showBlocks',1,'stacked',1
+seq.plot();
 end
 % calculate trajectory 
 [ktraj_adc, t_adc, ktraj, t_ktraj, t_excitation, t_refocusing] = seq.calculateKspacePP();
